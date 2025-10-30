@@ -1,9 +1,7 @@
 -- =====================================
--- BAG OF CALTROPS HANDLER - OPTIMIZED V2
+-- BAG OF CALTROPS HANDLER - DEEP NPC SEARCH
 -- Создание зон шипов при использовании Q
--- ✅ ОПТИМИЗИРОВАНО: использует NPCCache вместо рекурсивного поиска
--- ✅ БЕЗ Heartbeat сканирования workspace
--- ✅ -95% нагрузки на производительность
+-- ✅ РАСШИРЕННЫЙ ПОИСК: ищет NPC везде (workspace, NPCs, Enemies, папки)
 -- Place in ServerScriptService
 -- =====================================
 
@@ -21,6 +19,7 @@ local CONFIG = {
 	DAMAGE_TICK_RATE = 1, -- Раз в секунду
 	BASE_DAMAGE = 15, -- 🔥 БАЗОВЫЙ УРОН 15 ЗА ТИК
 	DEBUG_MODE = true, -- Включить подробный дебаг
+	SEARCH_DEPTH = 3, -- Глубина поиска NPC в папках
 }
 
 -- ========================
@@ -28,7 +27,6 @@ local CONFIG = {
 -- ========================
 local ItemDatabase = nil
 local CombatSystem = nil
-local NPCCache = nil
 
 task.spawn(function()
 	local attempts = 0
@@ -61,23 +59,6 @@ task.spawn(function()
 
 	if not CombatSystem then
 		warn("⚠️ [CALTROPS] CombatSystem not found - using fallback damage!")
-	end
-
-	-- 🔥 НОВОЕ: Загружаем NPCCache
-	attempts = 0
-	repeat
-		local cacheModule = script.Parent:FindFirstChild("NPCCacheManager")
-		if cacheModule then
-			NPCCache = require(cacheModule)
-			print("✅ [CALTROPS] NPCCache loaded!")
-		else
-			wait(0.5)
-			attempts = attempts + 1
-		end
-	until NPCCache or attempts > 20
-
-	if not NPCCache then
-		warn("⚠️ [CALTROPS] NPCCache not found - performance will be reduced!")
 	end
 end)
 
@@ -139,6 +120,32 @@ local function isInZone(targetPosition, zonePosition, zoneSize)
 	local inY = dy <= 10 -- Запас по высоте
 
 	return inX and inZ and inY
+end
+
+-- ========================
+-- РЕКУРСИВНЫЙ ПОИСК ВСЕХ NPC
+-- ========================
+local function getAllNPCs(parent, depth, maxDepth, npcs)
+	if depth > maxDepth then return end
+
+	npcs = npcs or {}
+
+	for _, child in ipairs(parent:GetChildren()) do
+		-- Проверяем это NPC?
+		if child:IsA("Model") and child:FindFirstChild("Humanoid") and child:FindFirstChild("HumanoidRootPart") then
+			local isPlayer = Players:GetPlayerFromCharacter(child)
+			if not isPlayer then
+				table.insert(npcs, child)
+			end
+		end
+
+		-- Рекурсивно ищем в папках
+		if child:IsA("Folder") or child:IsA("Model") then
+			getAllNPCs(child, depth + 1, maxDepth, npcs)
+		end
+	end
+
+	return npcs
 end
 
 -- ========================
@@ -243,162 +250,139 @@ local function createCaltropZone(position, player)
 end
 
 -- ========================
--- ОБРАБОТКА УРОНА ОТ ШИПОВ - ОПТИМИЗИРОВАНО
+-- ОБРАБОТКА УРОНА ОТ ШИПОВ
 -- ========================
 local lastUpdateTime = tick()
 
--- 🔥 ИЗМЕНЕНИЕ: Используем обычный цикл вместо Heartbeat
-task.spawn(function()
-	while true do
-		task.wait(CONFIG.DAMAGE_TICK_RATE)
+RunService.Heartbeat:Connect(function()
+	local currentTime = tick()
 
-		local currentTime = tick()
+	if currentTime - lastUpdateTime < CONFIG.DAMAGE_TICK_RATE then
+		return
+	end
 
-		-- Обрабатываем каждую зону
-		for i = #activeZones, 1, -1 do
-			local zone = activeZones[i]
+	lastUpdateTime = currentTime
 
-			-- Проверяем истёк ли таймер
-			if currentTime >= zone.endTime or not zone.part or not zone.part.Parent then
-				if CONFIG.DEBUG_MODE and zone.damageCount > 0 then
-					print("🌵 [CALTROPS] Zone expired - Total hits: " .. zone.damageCount .. " over " .. zone.tickCount .. " ticks")
-				end
-				table.remove(activeZones, i)
-				continue
+	-- Обрабатываем каждую зону
+	for i = #activeZones, 1, -1 do
+		local zone = activeZones[i]
+
+		-- Проверяем истёк ли таймер
+		if currentTime >= zone.endTime or not zone.part or not zone.part.Parent then
+			if CONFIG.DEBUG_MODE and zone.damageCount > 0 then
+				print("🌵 [CALTROPS] Zone expired - Total hits: " .. zone.damageCount .. " over " .. zone.tickCount .. " ticks")
 			end
+			table.remove(activeZones, i)
+			continue
+		end
 
-			zone.tickCount = zone.tickCount + 1
+		zone.tickCount = zone.tickCount + 1
 
-			-- ОБНОВЛЯЕМ УРОН
-			if zone.ownerCharacter and zone.ownerCharacter.Parent then
-				local stacks = getItemStacks(zone.ownerCharacter, "BagOfCaltrops")
-				if stacks > 0 then
-					local itemData = ItemDatabase and ItemDatabase:GetItem("BagOfCaltrops")
-					if itemData then
-						local itemDamageBonus = itemData.BaseValue + (itemData.StackValue * (stacks - 1))
-						local playerDamageMultiplier = getPlayerDamageMultiplier(zone.ownerCharacter)
-						zone.damagePerSecond = itemDamageBonus * playerDamageMultiplier
+		-- ОБНОВЛЯЕМ УРОН
+		if zone.ownerCharacter and zone.ownerCharacter.Parent then
+			local stacks = getItemStacks(zone.ownerCharacter, "BagOfCaltrops")
+			if stacks > 0 then
+				local itemData = ItemDatabase and ItemDatabase:GetItem("BagOfCaltrops")
+				if itemData then
+					local itemDamageBonus = itemData.BaseValue + (itemData.StackValue * (stacks - 1))
+					local playerDamageMultiplier = getPlayerDamageMultiplier(zone.ownerCharacter)
+					zone.damagePerSecond = itemDamageBonus * playerDamageMultiplier
+				end
+			end
+		end
+
+		local zonePosition = zone.part.Position
+		local zoneSize = zone.part.Size
+		local hitThisTick = 0
+
+		-- 🔍 ГЛУБОКИЙ ПОИСК ВСЕХ NPC
+		local allNPCs = getAllNPCs(workspace, 0, CONFIG.SEARCH_DEPTH)
+
+		if CONFIG.DEBUG_MODE and zone.tickCount == 1 then
+			print("🔍 [CALTROPS] Found " .. #allNPCs .. " total NPCs in workspace")
+		end
+
+		-- ПРОВЕРЯЕМ КАЖДОГО NPC
+		for _, npc in ipairs(allNPCs) do
+			local humanoid = npc:FindFirstChild("Humanoid")
+			local rootPart = npc:FindFirstChild("HumanoidRootPart")
+
+			if humanoid and rootPart and humanoid.Health > 0 then
+				local npcPos = rootPart.Position
+				local distance = (npcPos - zonePosition).Magnitude
+
+				-- DEBUG: показываем первые 3 тика
+				if CONFIG.DEBUG_MODE and zone.tickCount <= 3 then
+					print("   📍 NPC: " .. npc.Name .. " - Distance: " .. string.format("%.1f", distance) .. " studs")
+				end
+
+				-- Проверяем находится ли в зоне
+				if isInZone(npcPos, zonePosition, zoneSize) then
+					-- 🔥 НАНОСИМ УРОН
+					local damageBefore = humanoid.Health
+					humanoid:TakeDamage(zone.damagePerSecond)
+					local damageAfter = humanoid.Health
+					local actualDamage = damageBefore - damageAfter
+
+					hitThisTick = hitThisTick + 1
+					zone.damageCount = zone.damageCount + 1
+
+					print("🌵 [CALTROPS HIT] " .. npc.Name .. " -" .. string.format("%.1f", actualDamage) .. " HP (Remaining: " .. string.format("%.1f", damageAfter) .. "/" .. humanoid.MaxHealth .. ")")
+
+					-- Визуальный эффект
+					if CONFIG.DEBUG_MODE then
+						local hitEffect = Instance.new("Part")
+						hitEffect.Size = Vector3.new(2, 2, 2)
+						hitEffect.Position = npcPos + Vector3.new(0, 3, 0)
+						hitEffect.Anchored = true
+						hitEffect.CanCollide = false
+						hitEffect.Transparency = 0.5
+						hitEffect.Color = Color3.fromRGB(255, 0, 0)
+						hitEffect.Material = Enum.Material.Neon
+						hitEffect.Shape = Enum.PartType.Ball
+						hitEffect.Parent = workspace
+						Debris:AddItem(hitEffect, 0.3)
 					end
 				end
 			end
+		end
 
-			local zonePosition = zone.part.Position
-			local zoneSize = zone.part.Size
-			local hitThisTick = 0
+		-- ПРОВЕРЯЕМ ИГРОКОВ
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player ~= zone.owner and player.Character then
+				local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+				local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
 
-			-- 🔥 НОВОЕ: Используем NPCCache вместо рекурсивного поиска
-			local allNPCs = {}
-			if NPCCache then
-				-- Быстрый поиск через кеш (только в радиусе + немного запаса)
-				local searchRadius = (CONFIG.ZONE_SIZE * 1.5) / 2
-				allNPCs = NPCCache:GetNPCsInRadius(zonePosition, searchRadius)
+				if humanoid and humanoid.Health > 0 and rootPart then
+					local playerPos = rootPart.Position
 
-				if CONFIG.DEBUG_MODE and zone.tickCount == 1 then
-					print("🔍 [CALTROPS] Found " .. #allNPCs .. " NPCs via NPCCache (optimized)")
-				end
-			else
-				-- Fallback: медленный поиск (если NPCCache не загружен)
-				warn("⚠️ [CALTROPS] NPCCache not available, using slow search!")
-				for _, obj in pairs(workspace:GetDescendants()) do
-					if obj:IsA("Model") and obj:FindFirstChild("Humanoid") and obj:FindFirstChild("HumanoidRootPart") then
-						local isPlayer = Players:GetPlayerFromCharacter(obj)
-						if not isPlayer then
-							local humanoid = obj:FindFirstChild("Humanoid")
-							local rootPart = obj:FindFirstChild("HumanoidRootPart")
-							table.insert(allNPCs, {
-								model = obj,
-								humanoid = humanoid,
-								rootPart = rootPart,
-								position = rootPart.Position,
-							})
-						end
-					end
-				end
-			end
+					if isInZone(playerPos, zonePosition, zoneSize) then
+						if CombatSystem and CombatSystem.ApplyDamage then
+							local success = pcall(function()
+								CombatSystem.ApplyDamage(player, zone.damagePerSecond, zone.owner, zonePosition)
+							end)
 
-			-- ПРОВЕРЯЕМ КАЖДОГО NPC
-			for _, npcData in ipairs(allNPCs) do
-				local npc = npcData.model
-				local humanoid = npcData.humanoid
-				local rootPart = npcData.rootPart
-
-				if humanoid and rootPart and humanoid.Health > 0 then
-					local npcPos = npcData.position or rootPart.Position
-					local distance = (npcPos - zonePosition).Magnitude
-
-					-- DEBUG: показываем первые 3 тика
-					if CONFIG.DEBUG_MODE and zone.tickCount <= 3 then
-						print("   📍 NPC: " .. npc.Name .. " - Distance: " .. string.format("%.1f", distance) .. " studs")
-					end
-
-					-- Проверяем находится ли в зоне
-					if isInZone(npcPos, zonePosition, zoneSize) then
-						-- 🔥 НАНОСИМ УРОН
-						local damageBefore = humanoid.Health
-						humanoid:TakeDamage(zone.damagePerSecond)
-						local damageAfter = humanoid.Health
-						local actualDamage = damageBefore - damageAfter
-
-						hitThisTick = hitThisTick + 1
-						zone.damageCount = zone.damageCount + 1
-
-						print("🌵 [CALTROPS HIT] " .. npc.Name .. " -" .. string.format("%.1f", actualDamage) .. " HP (Remaining: " .. string.format("%.1f", damageAfter) .. "/" .. humanoid.MaxHealth .. ")")
-
-						-- Визуальный эффект
-						if CONFIG.DEBUG_MODE then
-							local hitEffect = Instance.new("Part")
-							hitEffect.Size = Vector3.new(2, 2, 2)
-							hitEffect.Position = npcPos + Vector3.new(0, 3, 0)
-							hitEffect.Anchored = true
-							hitEffect.CanCollide = false
-							hitEffect.Transparency = 0.5
-							hitEffect.Color = Color3.fromRGB(255, 0, 0)
-							hitEffect.Material = Enum.Material.Neon
-							hitEffect.Shape = Enum.PartType.Ball
-							hitEffect.Parent = workspace
-							Debris:AddItem(hitEffect, 0.3)
-						end
-					end
-				end
-			end
-
-			-- ПРОВЕРЯЕМ ИГРОКОВ
-			for _, player in ipairs(Players:GetPlayers()) do
-				if player ~= zone.owner and player.Character then
-					local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
-					local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
-
-					if humanoid and humanoid.Health > 0 and rootPart then
-						local playerPos = rootPart.Position
-
-						if isInZone(playerPos, zonePosition, zoneSize) then
-							if CombatSystem and CombatSystem.ApplyDamage then
-								local success = pcall(function()
-									CombatSystem.ApplyDamage(player, zone.damagePerSecond, zone.owner, zonePosition)
-								end)
-
-								if success then
-									hitThisTick = hitThisTick + 1
-									zone.damageCount = zone.damageCount + 1
-									print("🌵 [CALTROPS HIT] " .. player.Name .. " -" .. string.format("%.1f", zone.damagePerSecond) .. " HP")
-								end
-							else
-								humanoid:TakeDamage(zone.damagePerSecond)
+							if success then
 								hitThisTick = hitThisTick + 1
 								zone.damageCount = zone.damageCount + 1
-								print("🌵 [CALTROPS HIT] " .. player.Name .. " -" .. string.format("%.1f", zone.damagePerSecond) .. " HP (fallback)")
+								print("🌵 [CALTROPS HIT] " .. player.Name .. " -" .. string.format("%.1f", zone.damagePerSecond) .. " HP")
 							end
+						else
+							humanoid:TakeDamage(zone.damagePerSecond)
+							hitThisTick = hitThisTick + 1
+							zone.damageCount = zone.damageCount + 1
+							print("🌵 [CALTROPS HIT] " .. player.Name .. " -" .. string.format("%.1f", zone.damagePerSecond) .. " HP (fallback)")
 						end
 					end
 				end
 			end
+		end
 
-			-- Debug: сообщаем если никто не был задет
-			if CONFIG.DEBUG_MODE and hitThisTick == 0 then
-				print("🌵 [CALTROPS] Tick #" .. zone.tickCount .. " - no targets hit (found " .. #allNPCs .. " NPCs)")
-			elseif hitThisTick > 0 then
-				print("🌵 [CALTROPS] Tick #" .. zone.tickCount .. " - hit " .. hitThisTick .. " targets")
-			end
+		-- Debug: сообщаем если никто не был задет
+		if CONFIG.DEBUG_MODE and hitThisTick == 0 then
+			print("🌵 [CALTROPS] Tick #" .. zone.tickCount .. " - no targets hit (found " .. #allNPCs .. " NPCs)")
+		elseif hitThisTick > 0 then
+			print("🌵 [CALTROPS] Tick #" .. zone.tickCount .. " - hit " .. hitThisTick .. " targets")
 		end
 	end
 end)
@@ -463,12 +447,12 @@ task.spawn(function()
 	setupUniversalQAbility()
 
 	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	print("✅ [BAG OF CALTROPS] OPTIMIZED V2!")
+	print("✅ [BAG OF CALTROPS] DEEP SEARCH ENABLED!")
 	print("   Base damage: " .. CONFIG.BASE_DAMAGE .. "/sec")
 	print("   Zone size: " .. CONFIG.ZONE_SIZE .. "x" .. CONFIG.ZONE_SIZE .. " studs")
 	print("   Duration: " .. CONFIG.ZONE_DURATION .. " seconds")
 	print("   Damage tick: every " .. CONFIG.DAMAGE_TICK_RATE .. " second")
-	print("   🚀 Uses NPCCache for -95% performance cost")
+	print("   🔍 Search depth: " .. CONFIG.SEARCH_DEPTH .. " levels")
 	print("   🔥 Scales with player damage stat!")
 	print("   🔴 DEBUG MODE: " .. tostring(CONFIG.DEBUG_MODE))
 	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -493,4 +477,16 @@ end
 _G.CaltropsDebug = function(enabled)
 	CONFIG.DEBUG_MODE = enabled
 	print("🌵 [CALTROPS] Debug mode: " .. tostring(enabled))
+end
+
+_G.ListAllNPCs = function()
+	local allNPCs = getAllNPCs(workspace, 0, CONFIG.SEARCH_DEPTH)
+	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	print("🔍 [CALTROPS] Total NPCs found: " .. #allNPCs)
+	for i, npc in ipairs(allNPCs) do
+		local humanoid = npc:FindFirstChild("Humanoid")
+		local rootPart = npc:FindFirstChild("HumanoidRootPart")
+		print("   " .. i .. ". " .. npc.Name .. " - HP: " .. (humanoid and humanoid.Health or "N/A") .. " - Pos: " .. (rootPart and tostring(rootPart.Position) or "N/A"))
+	end
+	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 end
