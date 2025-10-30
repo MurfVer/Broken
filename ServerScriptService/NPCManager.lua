@@ -17,7 +17,7 @@ print("🤖 [NPC MANAGER] Loading...")
 -- КОНФИГУРАЦИЯ
 -- ========================
 local CONFIG = {
-	DEBUG_MODE = false,
+	DEBUG_MODE = true,
 
 	-- Производительность
 	BATCH_SIZE = 50, -- NPCs обрабатываемых за раз
@@ -167,7 +167,9 @@ local function findNearestTarget(npcData)
 	local nearestPlayer = nil
 	local nearestDistance = CONFIG.DETECTION_RANGE
 
+	local playerCount = 0
 	for _, player in ipairs(Players:GetPlayers()) do
+		playerCount = playerCount + 1
 		if player.Character then
 			local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
 			local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
@@ -181,6 +183,10 @@ local function findNearestTarget(npcData)
 				end
 			end
 		end
+	end
+
+	if CONFIG.DEBUG_MODE and playerCount == 0 then
+		warn("⚠️ [NPC MANAGER] No players found in game!")
 	end
 
 	return nearestPlayer
@@ -236,6 +242,10 @@ end
 -- ========================
 function NPCManager:UpdateMelee(npcData)
 	if npcData.humanoid.Health <= 0 then return end
+
+	if CONFIG.DEBUG_MODE then
+		print("⚔️ [NPC MANAGER] UpdateMelee called for: " .. npcData.npc.Name)
+	end
 
 	local target = findNearestTarget(npcData)
 
@@ -458,9 +468,16 @@ end
 -- ОСНОВНОЙ ЦИКЛ
 -- ========================
 local function mainLoop()
+	local loopCount = 0
 	while true do
+		loopCount = loopCount + 1
 		local startTime = tick()
 		local npcsToProcess = math.min(CONFIG.BATCH_SIZE, NPCManager.totalNPCs)
+
+		-- Debug: каждые 50 итераций выводим статус
+		if CONFIG.DEBUG_MODE and loopCount % 50 == 0 then
+			print("🔄 [NPC MANAGER] Loop #" .. loopCount .. " - Total NPCs: " .. NPCManager.totalNPCs .. ", Processing: " .. npcsToProcess)
+		end
 
 		for i = 1, npcsToProcess do
 			local index = ((NPCManager.currentBatch - 1) * CONFIG.BATCH_SIZE + i)
