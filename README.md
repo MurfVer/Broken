@@ -6,7 +6,10 @@
 
 ```
 Broken/
-├── CombatSystem.lua                    # Главная боевая система (v3)
+├── ReplicatedStorage/                  # Модули (shared between server/client)
+│   ├── CombatSystem.lua               # Главная боевая система (v3)
+│   ├── ItemDatabase.lua               # База данных предметов (28 items)
+│   └── ItemEffectSystem.lua           # Система эффектов предметов
 ├── ServerScriptService/                # Серверные скрипты
 │   ├── PhantomHarvest.lua             # Жатва Душ (Ультимейт)
 │   ├── PhantomScythe.lua              # Коса Жнеца
@@ -19,6 +22,156 @@ Broken/
         ├── PhantomShadowStepClient.lua # Клиент: Теневой Шаг
         └── PhantomSoulHarvestClient.lua# Клиент: Жатва Душ (Канальная)
 ```
+
+---
+
+## 📦 Модули (ReplicatedStorage)
+
+### 1. ⚔️ CombatSystem.lua
+
+Главная боевая система с расчётом урона, эффектов и интеграцией всех предметов.
+
+**Основные функции:**
+```lua
+-- Применить урон с полной интеграцией предметов
+CombatSystem.ApplyDamage(victim, damage, attacker, hitPosition)
+
+-- Расчёт исходящего урона (бонусы атакующего)
+CombatSystem.CalculateOutgoingDamage(attacker, baseDamage, targetHumanoid)
+
+-- Расчёт входящего урона (защита, щиты жертвы)
+CombatSystem.CalculateIncomingDamage(victim, damage, attacker)
+
+-- On-hit эффекты (поджог, яд, молнии)
+CombatSystem.TriggerOnHitEffects(attacker, victim, damage, hitPosition)
+
+-- Вампиризм
+CombatSystem.ApplyLifesteal(attacker, damageDealt)
+```
+
+**Поддерживаемые предметы:**
+- 💥 **Урон:** Sharp Stone, Quick Draw, Berserker's Rage, Momentum Chain, Executioner's Blade, Overcharged Battery
+- 🛡️ **Защита:** Iron Armor, Energy Shield, Divine Intervention, Survivor's Will
+- ⚡ **Эффекты:** Old Lighter (Burn), Vile Vial (Poison), Chain Lightning, Blade Echo
+- 🧛 **Вампиризм:** Vampire Fang
+- 💀 **Прочее:** Soul Eater, Phoenix Ash
+
+**Интеграция с NPC:**
+```lua
+-- Для NPC создайте fake player:
+local fakePlayer = {
+    UserId = npc:GetAttribute("NPCId") or 0,
+    Name = npc.Name,
+    Character = npc,
+    Team = nil
+}
+CombatSystem.ApplyDamage(fakePlayer, damage, attacker, hitPosition)
+```
+
+---
+
+### 2. 📋 ItemDatabase.lua
+
+База данных всех предметов с их характеристиками и редкостью.
+
+**Структура предмета:**
+```lua
+ItemName = {
+    ID = "unique_id",
+    Name = "Display Name",
+    Description = "Item description",
+    Rarity = "Common/Uncommon/Rare/Legendary",
+    Effect = "EffectName",
+    BaseValue = 10,           -- Базовое значение
+    StackValue = 5,           -- Значение за каждый доп. стак
+    Color = Color3.fromRGB(...),
+    ModelName = "ModelName"
+}
+```
+
+**Предметы по редкости:**
+- **Common (50%):** 8 предметов - Sprint Shoes, Healing Crystal, Sharp Stone, Iron Armor, Scavenger's Pouch, Quick Draw, Survivor's Will, Old Lighter
+- **Uncommon (35%):** 7 предметов - Lucky Clover, Life Stone, Anti-Gravity Belt, Berserker's Rage, Momentum Chain, Bag of Caltrops, Thorn Bandoleer
+- **Rare (12%):** 9 предметов - Energy Shield, Vampire Fang, Blade Echo, Phoenix Ash, Soul Eater, Executioner's Blade, Chain Lightning, Crit Multiplier, Vile Vial
+- **Legendary (3%):** 4 предмета - Wings of Freedom, Overcharged Battery, Divine Intervention, Mimic's Luck
+
+**Основные функции:**
+```lua
+-- Получить случайный предмет с учётом весов редкости
+local itemKey, itemData = ItemDatabase:GetRandomItem(mimicLuckStacks)
+
+-- Получить предмет по ключу
+local item = ItemDatabase:GetItem("SharpStone")
+
+-- Получить предмет по ID
+local key, item = ItemDatabase:GetItemByID("sharp_stone")
+
+-- Получить все предметы определённой редкости
+local rareItems = ItemDatabase:GetItemsByRarity("Rare")
+
+-- Статистика
+ItemDatabase:PrintStats()
+```
+
+**Особенности:**
+- ❌ Удалены: InfinityDash, OverflowingChalice (причина: баланс)
+- ✅ Система весов редкости с Mimic's Luck
+- ✅ Всего 28 предметов
+
+---
+
+### 3. ✨ ItemEffectSystem.lua
+
+Система обработки всех эффектов предметов в реальном времени.
+
+**Основные функции:**
+```lua
+-- Инициализация предметов игрока
+ItemEffectSystem:InitializePlayer(player)
+
+-- Применить эффекты предмета
+ItemEffectSystem:ApplyItemEffects(player, humanoid)
+
+-- Обновить статистику после изменения предметов
+ItemEffectSystem:UpdatePlayerStats(player)
+```
+
+**Поддерживаемые эффекты:**
+
+| Эффект | Предметы | Описание |
+|--------|----------|----------|
+| **Speed** | Sprint Shoes | +5 WalkSpeed за стак |
+| **Health** | Healing Crystal | +20 MaxHealth за стак |
+| **DamagePercent** | Sharp Stone | +10% урона за стак |
+| **Defense** | Iron Armor | -10 входящего урона за стак |
+| **CritChance** | Lucky Clover | +10% шанс крита за стак |
+| **Regen** | Life Stone | +2 HP/sec за стак |
+| **JumpPower** | Anti-Gravity Belt | +15 JumpPower за стак |
+| **Shield** | Energy Shield | +30 HP щита за стак |
+| **Lifesteal** | Vampire Fang | +5% вампиризма за стак |
+| **DoubleJump** | Wings of Freedom | Двойной прыжок |
+| **BurnChance** | Old Lighter | +10% шанс поджога за стак |
+| **PoisonChance** | Vile Vial | +20% шанс отравления за стак |
+| **QuickDraw** | Quick Draw | +20% урона первой атаки |
+| **BerserkerRage** | Berserker's Rage | +25% урона при HP < 30% |
+| **MomentumChain** | Momentum Chain | +8% урона за стак (макс 5) |
+| **ExecuteDamage** | Executioner's Blade | +100% урона по врагам с HP < 20% |
+| **SoulEater** | Soul Eater | +1 MaxHP за убийство (макс 200) |
+| **OverchargedBattery** | Overcharged Battery | x5 урон + AOE каждая 10-я атака |
+
+**Система регенерации щита:**
+```lua
+-- Щит регенерирует 50% от максимума каждые 5 секунд
+-- Прерывается при получении урона
+```
+
+**Особенности:**
+- ✅ Упрощённая система проков (без двойных проков)
+- ✅ Поддержка стаков предметов
+- ✅ Сохранение базового здоровья при снятии Soul Eater
+- ✅ Автоматическое применение всех эффектов через CombatSystem
+
+---
 
 ## ⚔️ CombatSystem v3
 
@@ -147,12 +300,15 @@ Broken/
 
 ## 🔧 Установка в Roblox Studio
 
-### 1. CombatSystem
+### 1. Модули (ReplicatedStorage)
 ```lua
 -- Place: ReplicatedStorage
--- Type: ModuleScript
--- Name: CombatSystem
+-- Type: ModuleScript для каждого файла
 ```
+Скопируйте все файлы из папки `ReplicatedStorage/`:
+- **CombatSystem.lua** → ModuleScript "CombatSystem"
+- **ItemDatabase.lua** → ModuleScript "ItemDatabase"
+- **ItemEffectSystem.lua** → ModuleScript "ItemEffectSystem"
 
 ### 2. Серверные скрипты
 ```lua
@@ -258,6 +414,9 @@ CombatSystem автоматически подключается к ItemEffectSy
 - ✅ Overcharged Battery - реализован взрыв AOE
 - ✅ Все способности Phantom используют CombatSystem.ApplyDamage
 - ✅ Поддержка NPC (fake player)
+- ✅ **ItemDatabase.lua** - полная база данных 28 предметов
+- ✅ **ItemEffectSystem.lua** - система эффектов предметов
+- ✅ Модули перенесены в ReplicatedStorage для правильной архитектуры
 
 ---
 
