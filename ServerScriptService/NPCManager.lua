@@ -68,16 +68,30 @@ local function loadSystems()
 
 	-- CombatSystem
 	local combatModule = ReplicatedStorage:FindFirstChild("CombatSystem")
-	if combatModule then
-		CombatSystem = require(combatModule)
-		print("✅ [NPC MANAGER] CombatSystem loaded!")
+	if combatModule and combatModule:IsA("ModuleScript") then
+		local success, result = pcall(function()
+			return require(combatModule)
+		end)
+		if success then
+			CombatSystem = result
+			print("✅ [NPC MANAGER] CombatSystem loaded!")
+		else
+			warn("⚠️ [NPC MANAGER] Failed to load CombatSystem: " .. tostring(result))
+		end
 	end
 
 	-- DOTSystem
 	local dotModule = script.Parent:FindFirstChild("DOTSystem")
-	if dotModule then
-		DOTSystem = require(dotModule)
-		print("✅ [NPC MANAGER] DOTSystem loaded!")
+	if dotModule and dotModule:IsA("ModuleScript") then
+		local success, result = pcall(function()
+			return require(dotModule)
+		end)
+		if success then
+			DOTSystem = result
+			print("✅ [NPC MANAGER] DOTSystem loaded!")
+		else
+			warn("⚠️ [NPC MANAGER] Failed to load DOTSystem: " .. tostring(result))
+		end
 	end
 end
 
