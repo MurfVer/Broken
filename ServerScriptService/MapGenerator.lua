@@ -1,514 +1,1135 @@
--- =====================================
--- MAP GENERATOR v2.1 - PROCEDURAL TERRAIN
--- 32x32 blocks, 40 block radius (80 diameter)
--- Perlin noise terrain with Portal placement
--- Place in ServerScriptService
--- =====================================
+-- Скрипт процедурной генерации карты для Roblox
+-- Версия 2.1 с системой уникальных структур (Portal)
+-- Размер блоков 32x32, карта 200x200
+-- Поместить в ServerScriptService
 
-local Workspace = game:GetService("Workspace")
-local ServerStorage = game:GetService("ServerStorage")
+warn("СКРИПТ ГЕНЕРАЦИИ КАРТЫ V2.1 ЗАПУЩЕН!")
 
-print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-print("🗺️ [MAP GENERATOR] Loading...")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 -- ========================
--- КОНФИГУРАЦИЯ
+-- НАСТРОЙКИ ГЕНЕРАЦИИ
 -- ========================
 local CONFIG = {
-	DEBUG_MODE = true,
+	-- Размеры карты и блоков
+	MAP_RADIUS = 40,          -- Радиус карты в блоках (диаметр 150 блоков)
+	BLOCK_SIZE = 32,          -- Размер одного блока в studs (32x32!)
 
-	-- Размеры карты
-	MAP_RADIUS = 40, -- Блоков от центра (диаметр = 80)
-	BLOCK_SIZE = 32, -- Размер одного блока в стадах
+	-- Высоты
+	START_HEIGHT = 10,         -- Начальная высота в центре (ground_10)
+	MIN_HEIGHT = 1,            -- Минимальная высота блока
+	MAX_HEIGHT = 20,           -- Максимальная высота блока
 
-	-- Генерация высоты
-	PERLIN_SCALE = 0.05, -- Масштаб шума (меньше = более гладкие холмы)
-	BASE_HEIGHT = 10, -- Базовая высота
-	HEIGHT_VARIATION = 30, -- Максимальное отклонение от базы
-	SEED = math.random(1, 1000000), -- Случайный сид
+	-- Генерация рельефа
+	SMOOTH_FACTOR = 0.6,      -- Плавность переходов
+	NOISE_SCALE = 0.1,        -- Масштаб шума (уменьшен для больших блоков)
+	NOISE_STRENGTH = 5,        -- Сила влияния шума
+	MAX_HEIGHT_DIFF = 1,       -- Максимальная разница высот между соседями
 
-	-- Структуры
-	STRUCTURE_CHANCE = 0.05, -- 5% шанс структуры на блоке
-	UNIQUE_STRUCTURE_MIN_HEIGHT = 8, -- Мин. высота для уникальных структур
+	-- Горы и долины для большой карты
+	MOUNTAIN_COUNT = 1,        -- Количество гор
+	MOUNTAIN_HEIGHT = 7,       -- Дополнительная высота гор
+	MOUNTAIN_SIZE = 12,        -- Радиус горы в блоках (уменьшен для 32x32)
+	VALLEY_COUNT = 1,          -- Количество долин
+	VALLEY_DEPTH = 5,          -- Глубина долин
+	VALLEY_SIZE = 4,           -- Радиус долины в блоках (уменьшен для 32x32)
 
-	-- Материалы
-	MATERIALS = {
-		GRASS = {
-			Material = Enum.Material.Grass,
-			Color = Color3.fromRGB(107, 142, 35),
-			MinHeight = 5,
-			MaxHeight = 999,
-		},
-		STONE = {
-			Material = Enum.Material.Slate,
-			Color = Color3.fromRGB(100, 100, 100),
-			MinHeight = 15,
-			MaxHeight = 999,
-		},
-		SNOW = {
-			Material = Enum.Material.Snow,
-			Color = Color3.fromRGB(255, 255, 255),
-			MinHeight = 25,
-			MaxHeight = 999,
-		},
-	},
+	-- Выравнивание блоков
+	ALIGN_TO_BOTTOM = true,    -- Блоки стоят на полу (Y=0 - нижняя грань)
 
-	-- Края карты
-	EDGE_MATERIAL = Enum.Material.Cobblestone,
-	EDGE_COLOR = Color3.fromRGB(70, 70, 70),
+	-- СИСТЕМА СТРУКТУР
+	GLOBAL_STRUCTURE_CHANCE = 0.75,  -- Глобальный шанс появления структуры
+	MIN_STRUCTURE_DISTANCE = 1.5,    -- Минимальное расстояние между структурами в блоках (уменьшено)
+	STRUCTURE_MIN_SCALE = 0.8,       -- Минимальный масштаб структур (увеличен для больших блоков)
+	STRUCTURE_MAX_SCALE = 3,         -- Максимальный масштаб структур (увеличен для больших блоков)
+
+	-- НАСТРОЙКИ ДЛЯ КАМЕННОЙ ГРАНИЦЫ
+	EDGE_STONE_MIN_SCALE = 5,   -- Минимальный масштаб камней на краю (увеличен)
+	EDGE_STONE_MAX_SCALE = 15,  -- Максимальный масштаб камней на краю (увеличен)
+	EDGE_STONE_CHANCE = 1,    -- Шанс появления камня на краю (80%)
+	EDGE_THRESHOLD = 0.92,      -- Порог расстояния от центра для края (95% радиуса)
+
+	-- ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ ДЛЯ АТРИБУТОВ
+	DEFAULT_SPAWN_CHANCE = 10,  -- 10% если атрибут отсутствует
+	DEFAULT_MIN_HEIGHT = 1,     -- может появиться везде
+	DEFAULT_MAX_HEIGHT = 20,    -- может появиться везде
+	DEFAULT_SPAWN_WEIGHT = 1,   -- равный приоритет
+
+	-- НОВЫЕ НАСТРОЙКИ ДЛЯ УНИКАЛЬНЫХ СТРУКТУР
+	UNIQUE_STRUCTURE_MIN_HEIGHT = 8,    -- Минимальная высота для уникальных структур
+	UNIQUE_STRUCTURE_MAX_HEIGHT = 15,   -- Максимальная высота для уникальных структур
+	UNIQUE_STRUCTURE_MIN_DISTANCE_FROM_CENTER = 10,  -- Минимальное расстояние от центра
+	UNIQUE_STRUCTURE_MAX_DISTANCE_FROM_CENTER = 30,  -- Максимальное расстояние от центра
+	UNIQUE_STRUCTURE_SCALE = 1,       -- Масштаб уникальных структур
 }
 
 -- ========================
--- ХРАНИЛИЩЕ ДАННЫХ
+-- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 -- ========================
-local MapState = {
-	generatedMap = nil,
-	totalBlocks = 0,
-	structuresPlaced = 0,
-	portalPlaced = false,
-	mapBlocks = {}, -- {[x][z] = {block, height}}
-}
+local generatedMap = {}
+local groundsFolder = nil
+local mapFolder = nil
+local mountainCenters = {}
+local valleyCenters = {}
+local structuresFolder = nil
+local placedStructures = {}
+
+-- НОВЫЕ ПЕРЕМЕННЫЕ ДЛЯ УНИКАЛЬНЫХ СТРУКТУР
+local portalModel = nil
+local portalPlaced = false
+local portalCandidates = {}  -- Список подходящих мест для Portal
+
+-- База данных структур
+local StructureDatabase = {}  -- [height] = {структуры для этой высоты}
+local AllStructures = {}      -- Все структуры для статистики
+
+-- Рандомизация шума Перлина
+local rng = nil
+local NOISE = { ox = 0, oz = 0, ot1 = 0, ot2 = 0, ot3 = 0 }
+
+local function initNoise()
+	rng = Random.new()
+	NOISE.ox = rng:NextNumber(-1e6, 1e6)
+	NOISE.oz = rng:NextNumber(-1e6, 1e6)
+	NOISE.ot1 = rng:NextNumber(-1e6, 1e6)
+	NOISE.ot2 = rng:NextNumber(-1e6, 1e6)
+	NOISE.ot3 = rng:NextNumber(-1e6, 1e6)
+end
 
 -- ========================
--- ШУМ ПЕРЛИНА (2D)
+-- БАЗОВЫЕ ФУНКЦИИ
 -- ========================
-local function perlinNoise(x, z, seed)
-	-- Простая реализация Perlin Noise
-	local function fade(t)
-		return t * t * t * (t * (t * 6 - 15) + 10)
+
+local function getGroundsFolder()
+	local folder = ReplicatedStorage:WaitForChild("Grounds", 5)
+	if not folder then
+		error("Папка 'Grounds' не найдена в ReplicatedStorage!")
+	end
+	return folder
+end
+
+local function getStructuresFolder()
+	local folder = ReplicatedStorage:FindFirstChild("RandomStructures")
+	if not folder then
+		warn("Папка 'RandomStructures' не найдена в ReplicatedStorage! Структуры не будут размещены.")
+		return nil
 	end
 
-	local function lerp(t, a, b)
-		return a + t * (b - a)
-	end
-
-	local function grad(hash, x, z)
-		local h = hash % 4
-		if h == 0 then return x + z
-		elseif h == 1 then return -x + z
-		elseif h == 2 then return x - z
-		else return -x - z
+	local structureCount = 0
+	for _, child in pairs(folder:GetChildren()) do
+		if child:IsA("Model") or child:IsA("BasePart") then
+			structureCount = structureCount + 1
 		end
 	end
 
-	-- Координаты сетки
-	local xi = math.floor(x) % 256
-	local zi = math.floor(z) % 256
-
-	-- Локальные координаты в ячейке
-	local xf = x - math.floor(x)
-	local zf = z - math.floor(z)
-
-	-- Сглаживание
-	local u = fade(xf)
-	local v = fade(zf)
-
-	-- Хеш-функция (используем сид)
-	local function hash(i, j)
-		return (i * 374761393 + j * 668265263 + seed) % 256
-	end
-
-	-- Градиенты углов
-	local aa = hash(xi, zi)
-	local ab = hash(xi, zi + 1)
-	local ba = hash(xi + 1, zi)
-	local bb = hash(xi + 1, zi + 1)
-
-	-- Интерполяция
-	local x1 = lerp(u, grad(aa, xf, zf), grad(ba, xf - 1, zf))
-	local x2 = lerp(u, grad(ab, xf, zf - 1), grad(bb, xf - 1, zf - 1))
-
-	return lerp(v, x1, x2)
-end
-
--- ========================
--- ПОЛУЧИТЬ ВЫСОТУ БЛОКА
--- ========================
-local function getBlockHeight(x, z)
-	-- Применяем Perlin Noise
-	local noise = perlinNoise(x * CONFIG.PERLIN_SCALE, z * CONFIG.PERLIN_SCALE, CONFIG.SEED)
-
-	-- Нормализуем от -1..1 к 0..1
-	local normalizedNoise = (noise + 1) / 2
-
-	-- Применяем высоту
-	local height = CONFIG.BASE_HEIGHT + (normalizedNoise * CONFIG.HEIGHT_VARIATION)
-
-	-- Округляем до целого
-	return math.floor(height + 0.5)
-end
-
--- ========================
--- ПОЛУЧИТЬ МАТЕРИАЛ ПО ВЫСОТЕ
--- ========================
-local function getMaterialForHeight(height)
-	if height >= 25 then
-		return CONFIG.MATERIALS.SNOW.Material, CONFIG.MATERIALS.SNOW.Color
-	elseif height >= 15 then
-		return CONFIG.MATERIALS.STONE.Material, CONFIG.MATERIALS.STONE.Color
+	if structureCount > 0 then
+		warn("Папка RandomStructures найдена! Обнаружено структур: " .. structureCount)
 	else
-		return CONFIG.MATERIALS.GRASS.Material, CONFIG.MATERIALS.GRASS.Color
+		warn("Папка RandomStructures найдена, но не содержит моделей!")
+		return nil
+	end
+
+	return folder
+end
+
+-- НОВАЯ ФУНКЦИЯ ДЛЯ ПОИСКА PORTAL
+local function getPortalModel()
+	local portal = ReplicatedStorage:FindFirstChild("Portal")
+	if portal then
+		warn("Portal найден в ReplicatedStorage!")
+		return portal
+	else
+		warn("Portal не найден в ReplicatedStorage! Уникальная структура не будет размещена.")
+		return nil
 	end
 end
 
--- ========================
--- СОЗДАТЬ БЛОК
--- ========================
-local function createBlock(x, z, height, isEdge)
-	local block = Instance.new("Part")
-	block.Name = "Block_" .. x .. "_" .. z
-	block.Size = Vector3.new(CONFIG.BLOCK_SIZE, height, CONFIG.BLOCK_SIZE)
-	block.Anchored = true
-	block.CFrame = CFrame.new(
-		x * CONFIG.BLOCK_SIZE,
-		height / 2,
-		z * CONFIG.BLOCK_SIZE
-	)
-
-	if isEdge then
-		block.Material = CONFIG.EDGE_MATERIAL
-		block.Color = CONFIG.EDGE_COLOR
-	else
-		local material, color = getMaterialForHeight(height)
-		block.Material = material
-		block.Color = color
+local function createMapFolder()
+	local folder = workspace:FindFirstChild("GeneratedMap")
+	if folder then
+		folder:Destroy()
 	end
+	folder = Instance.new("Folder")
+	folder.Name = "GeneratedMap"
+	folder.Parent = workspace
+	return folder
+end
 
-	-- Атрибуты
-	block:SetAttribute("BlockX", x)
-	block:SetAttribute("BlockZ", z)
-	block:SetAttribute("BlockHeight", height)
-	block:SetAttribute("IsEdge", isEdge)
-
+local function getGroundBlock(level)
+	level = math.clamp(level, CONFIG.MIN_HEIGHT, CONFIG.MAX_HEIGHT)
+	local blockName = "ground_" .. tostring(level)
+	local block = groundsFolder:FindFirstChild(blockName)
+	if not block then
+		for i = level - 1, CONFIG.MIN_HEIGHT, -1 do
+			local altBlock = groundsFolder:FindFirstChild("ground_" .. i)
+			if altBlock then
+				return altBlock
+			end
+		end
+		return groundsFolder:FindFirstChild("ground_1")
+	end
 	return block
 end
 
--- ========================
--- ПРОВЕРКА КРАЯ КАРТЫ
--- ========================
-local function isEdgeBlock(x, z)
+local function isInCircle(x, z)
 	local distance = math.sqrt(x * x + z * z)
-	return distance >= CONFIG.MAP_RADIUS - 1
+	return distance <= CONFIG.MAP_RADIUS
+end
+
+local function getHeightAt(x, z)
+	local key = x .. "," .. z
+	if generatedMap[key] then
+		return generatedMap[key].height
+	end
+	return nil
 end
 
 -- ========================
--- РАЗМЕСТИТЬ СТРУКТУРУ НА БЛОКЕ
+-- НОВАЯ СИСТЕМА УНИКАЛЬНЫХ СТРУКТУР
 -- ========================
-local function placeStructureOnBlock(x, z, blockClone, blockHeight)
-	-- Проверка шанса спавна структуры
-	if math.random() > CONFIG.STRUCTURE_CHANCE then
+
+-- Проверка, подходит ли место для Portal
+local function isValidPortalLocation(x, z, height)
+	-- Проверяем высоту
+	if height < CONFIG.UNIQUE_STRUCTURE_MIN_HEIGHT or height > CONFIG.UNIQUE_STRUCTURE_MAX_HEIGHT then
 		return false
 	end
 
-	-- Не спавним на краях
-	if isEdgeBlock(x, z) then
+	-- Проверяем расстояние от центра
+	local distanceFromCenter = math.sqrt(x * x + z * z)
+	if distanceFromCenter < CONFIG.UNIQUE_STRUCTURE_MIN_DISTANCE_FROM_CENTER or
+		distanceFromCenter > CONFIG.UNIQUE_STRUCTURE_MAX_DISTANCE_FROM_CENTER then
 		return false
 	end
 
-	-- Список структур
-	local structures = ServerStorage:FindFirstChild("Structures")
-	if not structures then return false end
-
-	local availableStructures = {}
-	for _, structure in ipairs(structures:GetChildren()) do
-		if structure:IsA("Model") then
-			table.insert(availableStructures, structure)
+	-- Проверяем, что не слишком близко к другим структурам
+	for _, structurePos in ipairs(placedStructures) do
+		local distance = math.sqrt((x - structurePos.x)^2 + (z - structurePos.z)^2)
+		if distance < CONFIG.MIN_STRUCTURE_DISTANCE * 2 then -- Удвоенное расстояние для Portal
+			return false
 		end
 	end
 
-	if #availableStructures == 0 then return false end
+	-- Проверяем, что место относительно ровное (соседи не сильно отличаются по высоте)
+	local neighbors = {
+		{x - 1, z}, {x + 1, z}, {x, z - 1}, {x, z + 1}
+	}
 
-	-- Выбираем случайную структуру
-	local chosenStructure = availableStructures[math.random(1, #availableStructures)]
-	local structureClone = chosenStructure:Clone()
-
-	-- Позиция на вершине блока
-	local structurePosition = Vector3.new(
-		x * CONFIG.BLOCK_SIZE,
-		blockHeight,
-		z * CONFIG.BLOCK_SIZE
-	)
-
-	if structureClone.PrimaryPart then
-		structureClone:SetPrimaryPartCFrame(CFrame.new(structurePosition))
-	elseif structureClone:FindFirstChild("Base") then
-		structureClone.Base.CFrame = CFrame.new(structurePosition)
-	end
-
-	structureClone.Parent = blockClone
-
-	MapState.structuresPlaced = MapState.structuresPlaced + 1
-
-	if CONFIG.DEBUG_MODE and MapState.structuresPlaced % 10 == 0 then
-		print("🏗️ [MAP] Placed " .. MapState.structuresPlaced .. " structures")
+	for _, neighbor in ipairs(neighbors) do
+		local neighborHeight = getHeightAt(neighbor[1], neighbor[2])
+		if neighborHeight and math.abs(height - neighborHeight) > 2 then
+			return false -- Слишком неровное место
+		end
 	end
 
 	return true
 end
 
--- ========================
--- РАЗМЕСТИТЬ ПОРТАЛ
--- ========================
-local function placePortal()
-	if MapState.portalPlaced then return end
-
-	-- Ищем подходящий блок (высокий и не на краю)
-	local bestBlock = nil
-	local bestHeight = 0
-
-	for x = -CONFIG.MAP_RADIUS + 5, CONFIG.MAP_RADIUS - 5 do
-		for z = -CONFIG.MAP_RADIUS + 5, CONFIG.MAP_RADIUS - 5 do
-			if MapState.mapBlocks[x] and MapState.mapBlocks[x][z] then
-				local blockData = MapState.mapBlocks[x][z]
-				local height = blockData.height
-
-				if height >= CONFIG.UNIQUE_STRUCTURE_MIN_HEIGHT and height > bestHeight then
-					local distance = math.sqrt(x * x + z * z)
-					if distance < CONFIG.MAP_RADIUS - 5 then
-						bestBlock = blockData
-						bestHeight = height
-					end
-				end
-			end
-		end
+-- Добавление кандидата для Portal
+local function addPortalCandidate(x, z, height)
+	if not portalPlaced and portalModel and isValidPortalLocation(x, z, height) then
+		table.insert(portalCandidates, {x = x, z = z, height = height})
 	end
+end
 
-	if not bestBlock then
-		warn("⚠️ [MAP] No suitable block found for Portal!")
+-- Размещение Portal в лучшем найденном месте
+local function placePortal()
+	if portalPlaced or not portalModel or #portalCandidates == 0 then
 		return
 	end
 
-	-- Создаём портал
-	local portal = Instance.new("Model")
-	portal.Name = "Portal"
+	-- Выбираем случайного кандидата из всех подходящих мест
+	local selectedCandidate = portalCandidates[math.random(1, #portalCandidates)]
+	local x, z, height = selectedCandidate.x, selectedCandidate.z, selectedCandidate.height
 
-	local portalPart = Instance.new("Part")
-	portalPart.Name = "PortalPart"
-	portalPart.Size = Vector3.new(6, 10, 0.5)
-	portalPart.Material = Enum.Material.Neon
-	portalPart.Color = Color3.fromRGB(138, 43, 226)
-	portalPart.Anchored = true
-	portalPart.CanCollide = false
-	portalPart.Transparency = 0.3
+	-- Получаем блок на этой позиции
+	local key = x .. "," .. z
+	local blockData = generatedMap[key]
+	if not blockData then
+		warn("Не удалось найти блок для размещения Portal!")
+		return
+	end
 
-	local x = bestBlock.block:GetAttribute("BlockX")
-	local z = bestBlock.block:GetAttribute("BlockZ")
-	local portalPosition = Vector3.new(
-		x * CONFIG.BLOCK_SIZE,
-		bestHeight + 5,
-		z * CONFIG.BLOCK_SIZE
-	)
+	local blockClone = blockData.block
+	local portalClone = portalModel:Clone()
 
-	portalPart.CFrame = CFrame.new(portalPosition) * CFrame.Angles(0, 0, math.pi / 2)
-	portalPart.Parent = portal
+	-- Вычисляем позицию для Portal
+	local worldX = x * CONFIG.BLOCK_SIZE
+	local worldZ = z * CONFIG.BLOCK_SIZE
+	local worldY = 0
 
-	-- Подсветка
-	local light = Instance.new("PointLight")
-	light.Brightness = 3
-	light.Range = 30
-	light.Color = Color3.fromRGB(138, 43, 226)
-	light.Parent = portalPart
+	-- Получаем верхнюю поверхность блока
+	if blockClone:IsA("BasePart") then
+		worldY = blockClone.Position.Y + blockClone.Size.Y / 2
+	elseif blockClone:IsA("Model") then
+		local cf, size = blockClone:GetBoundingBox()
+		worldY = cf.Position.Y + size.Y / 2
+	end
 
-	-- Частицы
-	local particles = Instance.new("ParticleEmitter")
-	particles.Texture = "rbxasset://textures/particles/sparkles_main.dds"
-	particles.Color = ColorSequence.new(Color3.fromRGB(138, 43, 226))
-	particles.Size = NumberSequence.new(0.5)
-	particles.Lifetime = NumberRange.new(1, 2)
-	particles.Rate = 50
-	particles.Speed = NumberRange.new(2, 4)
-	particles.SpreadAngle = Vector2.new(180, 180)
-	particles.Parent = portalPart
+	-- Размещаем и масштабируем Portal
+	if portalClone:IsA("BasePart") then
+		portalClone.Size = portalClone.Size * CONFIG.UNIQUE_STRUCTURE_SCALE
+		worldY = worldY + (portalClone.Size.Y / 2)
+		portalClone.Position = Vector3.new(worldX, worldY, worldZ)
+		portalClone.Anchored = true
+		-- Случайный поворот
+		portalClone.CFrame = portalClone.CFrame * CFrame.Angles(0, math.rad(math.random(0, 360)), 0)
 
-	-- Атрибуты состояния
-	portalPart:SetAttribute("IsCharging", false)
-	portalPart:SetAttribute("IsActive", false)
-	portalPart:SetAttribute("ChargeProgress", 0)
+	elseif portalClone:IsA("Model") then
+		local cf, size = portalClone:GetBoundingBox()
 
-	portal.Parent = Workspace
-	MapState.portalPlaced = true
+		-- Масштабируем все части
+		for _, part in pairs(portalClone:GetDescendants()) do
+			if part:IsA("BasePart") then
+				part.Size = part.Size * CONFIG.UNIQUE_STRUCTURE_SCALE
+				local offset = part.Position - cf.Position
+				part.Position = cf.Position + (offset * CONFIG.UNIQUE_STRUCTURE_SCALE)
+				part.Anchored = true
 
-	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	print("🌀 [MAP] Portal placed!")
-	print("   Position: " .. tostring(portalPosition))
-	print("   Block height: " .. bestHeight)
-	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+				-- Масштабируем меши
+				local mesh = part:FindFirstChildOfClass("SpecialMesh") or part:FindFirstChildOfClass("BlockMesh")
+				if mesh then
+					mesh.Scale = mesh.Scale * CONFIG.UNIQUE_STRUCTURE_SCALE
+				end
+			end
+		end
+
+		-- Позиционируем модель
+		local newCf, newSize = portalClone:GetBoundingBox()
+		worldY = worldY + (newSize.Y / 2)
+		portalClone:PivotTo(CFrame.new(worldX, worldY, worldZ))
+
+		-- Случайный поворот
+		local randomRotation = CFrame.Angles(0, math.rad(math.random(0, 360)), 0)
+		portalClone:PivotTo(portalClone:GetPivot() * randomRotation)
+	end
+
+	portalClone.Parent = mapFolder
+	portalPlaced = true
+
+	-- Записываем в список структур
+	table.insert(placedStructures, {
+		x = x,
+		z = z,
+		name = "Portal",
+		scale = CONFIG.UNIQUE_STRUCTURE_SCALE,
+		height = height,
+		isEdgeStone = false,
+		isUnique = true
+	})
+
+	warn(string.format("Portal размещен в позиции (%d, %d) на высоте %d! Масштаб: %.1f",
+		x, z, height, CONFIG.UNIQUE_STRUCTURE_SCALE))
 end
 
 -- ========================
--- ГЕНЕРАЦИЯ КАРТЫ
+-- СИСТЕМА СТРУКТУР (ОБНОВЛЕНА)
 -- ========================
-local function generateMap()
-	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	print("🗺️ [MAP GENERATOR] Starting generation...")
-	print("   Map radius: " .. CONFIG.MAP_RADIUS .. " blocks")
-	print("   Block size: " .. CONFIG.BLOCK_SIZE .. " studs")
-	print("   Total diameter: " .. (CONFIG.MAP_RADIUS * 2) .. " blocks")
-	print("   Seed: " .. CONFIG.SEED)
-	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	local startTime = tick()
-
-	-- Создаём контейнер карты
-	local mapContainer = Instance.new("Model")
-	mapContainer.Name = "GeneratedMap"
-
-	-- Инициализация таблицы блоков
-	for x = -CONFIG.MAP_RADIUS, CONFIG.MAP_RADIUS do
-		MapState.mapBlocks[x] = {}
+-- Инициализация базы данных структур
+local function initializeStructureDatabase()
+	if not structuresFolder then
+		return
 	end
 
-	-- Генерация блоков
-	local blocksGenerated = 0
+	StructureDatabase = {}
+	AllStructures = {}
 
-	for x = -CONFIG.MAP_RADIUS, CONFIG.MAP_RADIUS do
-		for z = -CONFIG.MAP_RADIUS, CONFIG.MAP_RADIUS do
-			-- Проверка радиуса (круглая карта)
-			local distance = math.sqrt(x * x + z * z)
+	local processedCount = 0
 
-			if distance <= CONFIG.MAP_RADIUS then
-				local isEdge = isEdgeBlock(x, z)
-				local height = getBlockHeight(x, z)
+	for _, model in pairs(structuresFolder:GetChildren()) do
+		if model:IsA("Model") or model:IsA("BasePart") then
+			-- Читаем атрибуты или используем значения по умолчанию
+			local spawnChance = model:GetAttribute("SpawnChance") or CONFIG.DEFAULT_SPAWN_CHANCE
+			local minHeight = model:GetAttribute("MinHeight") or CONFIG.DEFAULT_MIN_HEIGHT
+			local maxHeight = model:GetAttribute("MaxHeight") or CONFIG.DEFAULT_MAX_HEIGHT
+			local spawnWeight = model:GetAttribute("SpawnWeight") or CONFIG.DEFAULT_SPAWN_WEIGHT
 
-				local block = createBlock(x, z, height, isEdge)
-				block.Parent = mapContainer
+			-- Валидация значений
+			spawnChance = math.clamp(spawnChance, 0, 100)
+			minHeight = math.clamp(minHeight, CONFIG.MIN_HEIGHT, CONFIG.MAX_HEIGHT)
+			maxHeight = math.clamp(maxHeight, CONFIG.MIN_HEIGHT, CONFIG.MAX_HEIGHT)
+			spawnWeight = math.max(spawnWeight, 0.1) -- Минимальный вес 0.1
 
-				-- Сохраняем блок
-				MapState.mapBlocks[x][z] = {
-					block = block,
-					height = height,
-				}
+			-- Если minHeight > maxHeight, меняем местами
+			if minHeight > maxHeight then
+				minHeight, maxHeight = maxHeight, minHeight
+			end
 
-				-- Размещаем структуры (не на краях)
-				if not isEdge then
-					placeStructureOnBlock(x, z, block, height)
+			-- Добавляем в общий список
+			local structureData = {
+				model = model,
+				chance = spawnChance,
+				minHeight = minHeight,
+				maxHeight = maxHeight,
+				weight = spawnWeight,
+				name = model.Name
+			}
+			table.insert(AllStructures, structureData)
+
+			-- Добавляем в группы по высотам
+			for height = minHeight, maxHeight do
+				if not StructureDatabase[height] then
+					StructureDatabase[height] = {}
 				end
+				table.insert(StructureDatabase[height], {
+					model = model,
+					chance = spawnChance,
+					weight = spawnWeight,
+					name = model.Name
+				})
+			end
 
-				blocksGenerated = blocksGenerated + 1
+			processedCount = processedCount + 1
 
-				-- Прогресс каждые 100 блоков
-				if CONFIG.DEBUG_MODE and blocksGenerated % 100 == 0 then
-					print("🗺️ [MAP] Generated " .. blocksGenerated .. " blocks...")
+			-- Выводим информацию о структуре
+			print(string.format("Загружена структура '%s': шанс=%d%%, высоты=%d-%d, вес=%.1f",
+				model.Name, spawnChance, minHeight, maxHeight, spawnWeight))
+		end
+	end
+
+	warn("Инициализация структур завершена! Обработано: " .. processedCount .. " структур")
+
+	-- Показываем статистику по высотам
+	local heightStats = {}
+	for height = CONFIG.MIN_HEIGHT, CONFIG.MAX_HEIGHT do
+		if StructureDatabase[height] then
+			heightStats[height] = #StructureDatabase[height]
+		end
+	end
+
+	print("Распределение структур по высотам:")
+	for height = CONFIG.MIN_HEIGHT, CONFIG.MAX_HEIGHT do
+		if heightStats[height] and heightStats[height] > 0 then
+			print(string.format("  Высота %d: %d структур", height, heightStats[height]))
+		end
+	end
+end
+
+-- Взвешенный случайный выбор
+local function weightedRandomChoice(candidates)
+	if #candidates == 0 then
+		return nil
+	end
+
+	if #candidates == 1 then
+		return candidates[1]
+	end
+
+	-- Считаем общий вес
+	local totalWeight = 0
+	for _, candidate in ipairs(candidates) do
+		totalWeight = totalWeight + candidate.weight
+	end
+
+	if totalWeight <= 0 then
+		return candidates[1]
+	end
+
+	-- Случайное число от 0 до totalWeight
+	local randomValue = math.random() * totalWeight
+
+	-- Находим выбранную структуру
+	local currentWeight = 0
+	for _, candidate in ipairs(candidates) do
+		currentWeight = currentWeight + candidate.weight
+		if randomValue <= currentWeight then
+			return candidate
+		end
+	end
+
+	-- На всякий случай возвращаем последнюю
+	return candidates[#candidates]
+end
+
+-- Проверка минимального расстояния между структурами
+local function canPlaceStructure(x, z)
+	for _, structurePos in ipairs(placedStructures) do
+		local distance = math.sqrt((x - structurePos.x)^2 + (z - structurePos.z)^2)
+		if distance < CONFIG.MIN_STRUCTURE_DISTANCE then
+			return false
+		end
+	end
+	return true
+end
+
+-- Размещение структуры на блоке (ОБНОВЛЕНО ДЛЯ 32x32)
+local function placeStructureOnBlock(x, z, blockClone, blockHeight)
+	if not structuresFolder then
+		return
+	end
+
+	-- Проверяем, находится ли блок на краю карты
+	local distanceFromCenter = math.sqrt(x * x + z * z)
+	local isEdge = distanceFromCenter >= (CONFIG.MAP_RADIUS * CONFIG.EDGE_THRESHOLD)
+
+	-- === КРАЕВЫЕ КАМНИ ===
+	if isEdge then
+		if math.random() > CONFIG.EDGE_STONE_CHANCE then
+			return
+		end
+
+		local clif = structuresFolder:FindFirstChild("Clif")
+		if not clif then
+			return
+		end
+
+		for _, structurePos in ipairs(placedStructures) do
+			local distance = math.sqrt((x - structurePos.x)^2 + (z - structurePos.z)^2)
+			if structurePos.isEdgeStone and distance < 1.5 then
+				return
+			elseif not structurePos.isEdgeStone and distance < CONFIG.MIN_STRUCTURE_DISTANCE then
+				return
+			end
+		end
+
+		local structureClone = clif:Clone()
+		local randomScale = CONFIG.EDGE_STONE_MIN_SCALE +
+			(math.random() * (CONFIG.EDGE_STONE_MAX_SCALE - CONFIG.EDGE_STONE_MIN_SCALE))
+
+		local worldX = x * CONFIG.BLOCK_SIZE
+		local worldZ = z * CONFIG.BLOCK_SIZE
+		local worldY = 0
+
+		if blockClone:IsA("BasePart") then
+			worldY = blockClone.Position.Y + blockClone.Size.Y / 2
+		elseif blockClone:IsA("Model") then
+			local cf, size = blockClone:GetBoundingBox()
+			worldY = cf.Position.Y + size.Y / 2
+		end
+
+		if structureClone:IsA("BasePart") then
+			structureClone.Size = structureClone.Size * randomScale
+			worldY = worldY + (structureClone.Size.Y / 2)
+			structureClone.Position = Vector3.new(worldX, worldY, worldZ)
+			structureClone.Anchored = true
+			structureClone.CFrame = structureClone.CFrame * CFrame.Angles(0, math.rad(math.random(0, 360)), 0)
+		elseif structureClone:IsA("Model") then
+			local cf, size = structureClone:GetBoundingBox()
+
+			for _, part in pairs(structureClone:GetDescendants()) do
+				if part:IsA("BasePart") then
+					part.Size = part.Size * randomScale
+					local offset = part.Position - cf.Position
+					part.Position = cf.Position + (offset * randomScale)
+					part.Anchored = true
+
+					local mesh = part:FindFirstChildOfClass("SpecialMesh") or part:FindFirstChildOfClass("BlockMesh")
+					if mesh then
+						mesh.Scale = mesh.Scale * randomScale
+					end
+				end
+			end
+
+			local newCf, newSize = structureClone:GetBoundingBox()
+			worldY = worldY + (newSize.Y / 2)
+			structureClone:PivotTo(CFrame.new(worldX, worldY, worldZ))
+
+			local randomRotation = CFrame.Angles(0, math.rad(math.random(0, 360)), 0)
+			structureClone:PivotTo(structureClone:GetPivot() * randomRotation)
+		end
+
+		structureClone.Parent = mapFolder
+
+		table.insert(placedStructures, {
+			x = x,
+			z = z,
+			name = clif.Name,
+			scale = randomScale,
+			height = blockHeight,
+			isEdgeStone = true
+		})
+
+		return
+	end
+
+	-- === НОВАЯ СИСТЕМА ДЛЯ ОБЫЧНЫХ СТРУКТУР ===
+
+	-- 1. Глобальный шанс появления структуры
+	if math.random() > CONFIG.GLOBAL_STRUCTURE_CHANCE then
+		return -- Пустая клетка
+	end
+
+	-- 2. Проверяем минимальное расстояние
+	if not canPlaceStructure(x, z) then
+		return
+	end
+
+	-- 3. Получаем структуры, подходящие для данной высоты
+	local availableStructures = StructureDatabase[blockHeight]
+	if not availableStructures or #availableStructures == 0 then
+		return -- Нет подходящих структур
+	end
+
+	-- 4. Фильтруем по индивидуальным шансам
+	local candidates = {}
+	for _, structureData in ipairs(availableStructures) do
+		if math.random(1, 100) <= structureData.chance then
+			table.insert(candidates, structureData)
+		end
+	end
+
+	if #candidates == 0 then
+		return -- Ни одна структура не "выпала"
+	end
+
+	-- 5. Взвешенный выбор из кандидатов
+	local selectedStructure = weightedRandomChoice(candidates)
+	if not selectedStructure then
+		return
+	end
+
+	-- 6. Размещаем выбранную структуру
+	local structureClone = selectedStructure.model:Clone()
+	local randomScale = CONFIG.STRUCTURE_MIN_SCALE +
+		(math.random() * (CONFIG.STRUCTURE_MAX_SCALE - CONFIG.STRUCTURE_MIN_SCALE))
+
+	local worldX = x * CONFIG.BLOCK_SIZE
+	local worldZ = z * CONFIG.BLOCK_SIZE
+	local worldY = 0
+
+	-- Получаем верхнюю поверхность блока
+	if blockClone:IsA("BasePart") then
+		worldY = blockClone.Position.Y + blockClone.Size.Y / 2
+	elseif blockClone:IsA("Model") then
+		local cf, size = blockClone:GetBoundingBox()
+		worldY = cf.Position.Y + size.Y / 2
+	end
+
+	-- Размещаем и масштабируем структуру
+	if structureClone:IsA("BasePart") then
+		structureClone.Size = structureClone.Size * randomScale
+		worldY = worldY + (structureClone.Size.Y / 2)
+		structureClone.Position = Vector3.new(worldX, worldY, worldZ)
+		structureClone.Anchored = true
+		structureClone.CFrame = structureClone.CFrame * CFrame.Angles(0, math.rad(math.random(0, 360)), 0)
+
+	elseif structureClone:IsA("Model") then
+		local cf, size = structureClone:GetBoundingBox()
+
+		for _, part in pairs(structureClone:GetDescendants()) do
+			if part:IsA("BasePart") then
+				part.Size = part.Size * randomScale
+				local offset = part.Position - cf.Position
+				part.Position = cf.Position + (offset * randomScale)
+				part.Anchored = true
+
+				local mesh = part:FindFirstChildOfClass("SpecialMesh") or part:FindFirstChildOfClass("BlockMesh")
+				if mesh then
+					mesh.Scale = mesh.Scale * randomScale
+				end
+			end
+		end
+
+		local newCf, newSize = structureClone:GetBoundingBox()
+		worldY = worldY + (newSize.Y / 2)
+		structureClone:PivotTo(CFrame.new(worldX, worldY, worldZ))
+
+		local randomRotation = CFrame.Angles(0, math.rad(math.random(0, 360)), 0)
+		structureClone:PivotTo(structureClone:GetPivot() * randomRotation)
+	end
+
+	structureClone.Parent = mapFolder
+
+	-- Записываем позицию структуры
+	table.insert(placedStructures, {
+		x = x,
+		z = z,
+		name = selectedStructure.name,
+		scale = randomScale,
+		height = blockHeight,
+		isEdgeStone = false
+	})
+end
+
+-- ========================
+-- ГЕНЕРАЦИЯ ЛАНДШАФТА
+-- ========================
+
+local function generateLandscapeFeatures()
+	for i = 1, CONFIG.MOUNTAIN_COUNT do
+		local angle = (i - 1) * (2 * math.pi / CONFIG.MOUNTAIN_COUNT) + (math.random() - 0.5)
+		local distance = CONFIG.MAP_RADIUS * (0.25 + math.random() * 0.4)
+		local x = math.floor(math.cos(angle) * distance)
+		local z = math.floor(math.sin(angle) * distance)
+
+		if isInCircle(x, z) then
+			table.insert(mountainCenters, {x = x, z = z})
+		end
+	end
+
+	for i = 1, CONFIG.VALLEY_COUNT do
+		local angle = (i - 0.5) * (2 * math.pi / CONFIG.VALLEY_COUNT) + (math.random() - 0.5) * 0.5
+		local distance = CONFIG.MAP_RADIUS * (0.3 + math.random() * 0.3)
+		local x = math.floor(math.cos(angle) * distance)
+		local z = math.floor(math.sin(angle) * distance)
+
+		if isInCircle(x, z) then
+			table.insert(valleyCenters, {x = x, z = z})
+		end
+	end
+end
+
+local function getLandscapeInfluence(x, z)
+	local influence = 0
+
+	for _, mountain in ipairs(mountainCenters) do
+		local distance = math.sqrt((x - mountain.x)^2 + (z - mountain.z)^2)
+		if distance < CONFIG.MOUNTAIN_SIZE then
+			local strength = 1 - (distance / CONFIG.MOUNTAIN_SIZE)
+			strength = strength * strength * strength
+			influence = influence + strength * CONFIG.MOUNTAIN_HEIGHT
+		end
+	end
+
+	for _, valley in ipairs(valleyCenters) do
+		local distance = math.sqrt((x - valley.x)^2 + (z - valley.z)^2)
+		if distance < CONFIG.VALLEY_SIZE then
+			local strength = 1 - (distance / CONFIG.VALLEY_SIZE)
+			strength = strength * strength
+			influence = influence - strength * CONFIG.VALLEY_DEPTH
+		end
+	end
+
+	return influence
+end
+
+-- ========================
+-- ГЕНЕРАЦИЯ ВЫСОТ
+-- ========================
+
+local function generateHeight(x, z)
+	if x == 0 and z == 0 then
+		return CONFIG.START_HEIGHT
+	end
+
+	local neighbors = {
+		{x - 1, z},
+		{x + 1, z},
+		{x, z - 1},
+		{x, z + 1}
+	}
+
+	local neighborHeights = {}
+	local totalHeight = 0
+	local count = 0
+
+	for _, pos in ipairs(neighbors) do
+		local height = getHeightAt(pos[1], pos[2])
+		if height then
+			table.insert(neighborHeights, height)
+			totalHeight = totalHeight + height
+			count = count + 1
+		end
+	end
+
+	if count == 0 then
+		return CONFIG.START_HEIGHT
+	end
+
+	local averageHeight = totalHeight / count
+
+	local nx = (x + NOISE.ox) * CONFIG.NOISE_SCALE
+	local nz = (z + NOISE.oz) * CONFIG.NOISE_SCALE
+	local noise1 = math.noise(nx, nz, NOISE.ot1)
+	local noise2 = math.noise(nx * 2.5, nz * 2.5, NOISE.ot2) * 0.4
+	local noise3 = math.noise(nx * 5,   nz * 5,   NOISE.ot3) * 0.2
+	local combinedNoise = (noise1 + noise2 + noise3) * CONFIG.NOISE_STRENGTH
+
+	local landscapeInfluence = getLandscapeInfluence(x, z)
+
+	local targetHeight = averageHeight * CONFIG.SMOOTH_FACTOR +
+		(averageHeight + combinedNoise + landscapeInfluence) * (1 - CONFIG.SMOOTH_FACTOR)
+
+	targetHeight = targetHeight + (math.random() - 0.5) * 1.2
+
+	local distanceFromCenter = math.sqrt(x * x + z * z)
+	local edgeFactor = distanceFromCenter / CONFIG.MAP_RADIUS
+	if edgeFactor > 0.75 then
+		targetHeight = targetHeight - (edgeFactor - 0.75) * 8
+	end
+
+	local finalHeight = math.floor(targetHeight + 0.5)
+
+	for _, neighborHeight in ipairs(neighborHeights) do
+		if math.abs(finalHeight - neighborHeight) > CONFIG.MAX_HEIGHT_DIFF then
+			if finalHeight > neighborHeight then
+				finalHeight = neighborHeight + CONFIG.MAX_HEIGHT_DIFF
+			else
+				finalHeight = neighborHeight - CONFIG.MAX_HEIGHT_DIFF
+			end
+		end
+	end
+
+	return math.clamp(finalHeight, CONFIG.MIN_HEIGHT, CONFIG.MAX_HEIGHT)
+end
+
+-- ========================
+-- РАЗМЕЩЕНИЕ БЛОКОВ (ОБНОВЛЕНО)
+-- ========================
+
+local function placeBlock(x, z, height)
+	local block = getGroundBlock(height)
+	if not block then
+		warn("Не найден блок для высоты " .. height)
+		return
+	end
+
+	local clone = block:Clone()
+
+	local worldX = x * CONFIG.BLOCK_SIZE
+	local worldZ = z * CONFIG.BLOCK_SIZE
+	local worldY = 0
+
+	if CONFIG.ALIGN_TO_BOTTOM then
+		if clone:IsA("BasePart") then
+			worldY = clone.Size.Y / 2
+		elseif clone:IsA("Model") then
+			local cf, size = clone:GetBoundingBox()
+			worldY = size.Y / 2
+		end
+	end
+
+	if clone:IsA("BasePart") then
+		clone.Position = Vector3.new(worldX, worldY, worldZ)
+		clone.Anchored = true
+	elseif clone:IsA("Model") then
+		clone:PivotTo(CFrame.new(worldX, worldY, worldZ))
+		for _, part in pairs(clone:GetDescendants()) do
+			if part:IsA("BasePart") then
+				part.Anchored = true
+			end
+		end
+	end
+
+	clone.Parent = mapFolder
+
+	local key = x .. "," .. z
+	generatedMap[key] = {
+		height = height,
+		block = clone
+	}
+
+	-- НОВОЕ: Добавляем кандидата для Portal
+	addPortalCandidate(x, z, height)
+
+	placeStructureOnBlock(x, z, clone, height)
+end
+
+-- ========================
+-- ГЛАВНАЯ ГЕНЕРАЦИЯ (ОБНОВЛЕНА)
+-- ========================
+
+local function generateMap()
+	warn("=== НАЧИНАЕМ ГЕНЕРАЦИЮ КАРТЫ V2.1 (32x32 БЛОКИ + PORTAL) ===")
+	warn("Размер: " .. (CONFIG.MAP_RADIUS * 2) .. "x" .. (CONFIG.MAP_RADIUS * 2) .. " блоков")
+	warn("Размер блока: " .. CONFIG.BLOCK_SIZE .. "x" .. CONFIG.BLOCK_SIZE .. " studs")
+	warn("Ожидаемое количество блоков: ~" .. math.floor(math.pi * CONFIG.MAP_RADIUS * CONFIG.MAP_RADIUS))
+	warn("Глобальный шанс структур: " .. (CONFIG.GLOBAL_STRUCTURE_CHANCE * 100) .. "%")
+
+	if portalModel then
+		warn("Portal будет размещен единожды на карте!")
+	end
+
+	local queue = {{0, 0}}
+	local visited = {}
+	visited["0,0"] = true
+
+	local blocksGenerated = 0
+	local heightStats = {}
+	for i = 1, CONFIG.MAX_HEIGHT do
+		heightStats[i] = 0
+	end
+
+	local startTime = tick()
+	local lastYield = tick()
+	local lastProgress = 0
+
+	while #queue > 0 do
+		local pos = table.remove(queue, 1)
+		local x, z = pos[1], pos[2]
+
+		if isInCircle(x, z) then
+			local height = generateHeight(x, z)
+			placeBlock(x, z, height)
+
+			blocksGenerated = blocksGenerated + 1
+			heightStats[height] = heightStats[height] + 1
+
+			if blocksGenerated - lastProgress >= 1000 then
+				lastProgress = blocksGenerated
+				local elapsed = math.floor(tick() - startTime)
+				local speed = math.floor(blocksGenerated / (elapsed + 1))
+				print(string.format("Прогресс: %d блоков | %d сек | %d блоков/сек | Portal кандидатов: %d",
+					blocksGenerated, elapsed, speed, #portalCandidates))
+			end
+
+			if tick() - lastYield > 0.03 then
+				RunService.Heartbeat:Wait()
+				lastYield = tick()
+			end
+
+			local neighbors = {
+				{x - 1, z},
+				{x + 1, z},
+				{x, z - 1},
+				{x, z + 1}
+			}
+
+			for _, neighbor in ipairs(neighbors) do
+				local nx, nz = neighbor[1], neighbor[2]
+				local key = nx .. "," .. nz
+
+				if not visited[key] and isInCircle(nx, nz) then
+					visited[key] = true
+					table.insert(queue, {nx, nz})
 				end
 			end
 		end
 	end
 
-	mapContainer.Parent = Workspace
-	MapState.generatedMap = mapContainer
-	MapState.totalBlocks = blocksGenerated
-
-	local elapsedTime = tick() - startTime
-
-	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	print("✅ [MAP] Generation complete!")
-	print("   Blocks created: " .. blocksGenerated)
-	print("   Structures placed: " .. MapState.structuresPlaced)
-	print("   Generation time: " .. string.format("%.2f", elapsedTime) .. "s")
-	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-	-- Размещаем портал
-	task.wait(1)
+	-- НОВОЕ: Размещаем Portal после генерации всей карты
+	warn("Размещение Portal...")
 	placePortal()
 
-	return mapContainer
-end
+	local totalTime = math.floor(tick() - startTime)
 
--- ========================
--- ОЧИСТКА СТАРОЙ КАРТЫ
--- ========================
-local function clearOldMap()
-	local oldMap = Workspace:FindFirstChild("GeneratedMap")
-	if oldMap then
-		oldMap:Destroy()
-		print("🧹 [MAP] Old map cleared!")
-	end
-end
-
--- ========================
--- КОМАНДЫ УПРАВЛЕНИЯ
--- ========================
-_G.RegenerateMap = function(newSeed)
-	print("🔄 [MAP] Regenerating map...")
-
-	if newSeed then
-		CONFIG.SEED = newSeed
-		print("   New seed: " .. CONFIG.SEED)
-	else
-		CONFIG.SEED = math.random(1, 1000000)
-		print("   Random seed: " .. CONFIG.SEED)
+	-- Маркеры гор и долин (масштабированы для 32x32)
+	for i, mountain in ipairs(mountainCenters) do
+		local marker = Instance.new("Part")
+		marker.Name = "Mountain" .. i
+		marker.Size = Vector3.new(20, 200, 20)
+		marker.Position = Vector3.new(
+			mountain.x * CONFIG.BLOCK_SIZE,
+			100,
+			mountain.z * CONFIG.BLOCK_SIZE
+		)
+		marker.BrickColor = BrickColor.new("Brown")
+		marker.Material = Enum.Material.Rock
+		marker.Transparency = 0.5
+		marker.CanCollide = false
+		marker.Anchored = true
+		marker.Parent = mapFolder
 	end
 
-	clearOldMap()
-
-	MapState = {
-		generatedMap = nil,
-		totalBlocks = 0,
-		structuresPlaced = 0,
-		portalPlaced = false,
-		mapBlocks = {},
-	}
-
-	generateMap()
-end
-
-_G.MapStats = function()
-	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	print("🗺️ [MAP] Statistics:")
-	print("   Total blocks: " .. MapState.totalBlocks)
-	print("   Structures placed: " .. MapState.structuresPlaced)
-	print("   Portal placed: " .. tostring(MapState.portalPlaced))
-	print("   Map radius: " .. CONFIG.MAP_RADIUS .. " blocks")
-	print("   Current seed: " .. CONFIG.SEED)
-	print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-end
-
-_G.GetBlockAt = function(x, z)
-	if MapState.mapBlocks[x] and MapState.mapBlocks[x][z] then
-		local blockData = MapState.mapBlocks[x][z]
-		print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-		print("📍 [MAP] Block at (" .. x .. ", " .. z .. "):")
-		print("   Height: " .. blockData.height)
-		print("   Position: " .. tostring(blockData.block.Position))
-		print("   Material: " .. tostring(blockData.block.Material))
-		print("   Is edge: " .. tostring(blockData.block:GetAttribute("IsEdge")))
-		print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-		return blockData.block
-	else
-		print("❌ [MAP] No block at (" .. x .. ", " .. z .. ")")
-		return nil
+	for i, valley in ipairs(valleyCenters) do
+		local marker = Instance.new("Part")
+		marker.Name = "Valley" .. i
+		marker.Size = Vector3.new(25, 25, 25)
+		marker.Position = Vector3.new(
+			valley.x * CONFIG.BLOCK_SIZE,
+			15,
+			valley.z * CONFIG.BLOCK_SIZE
+		)
+		marker.BrickColor = BrickColor.new("Deep blue")
+		marker.Material = Enum.Material.ForceField
+		marker.Transparency = 0.4
+		marker.CanCollide = false
+		marker.Anchored = true
+		marker.Parent = mapFolder
 	end
-end
 
--- ========================
--- ИНИЦИАЛИЗАЦИЯ
--- ========================
-print("✅ [MAP GENERATOR] Loaded!")
-print("   Configuration:")
-print("   • Map radius: " .. CONFIG.MAP_RADIUS .. " blocks")
-print("   • Block size: " .. CONFIG.BLOCK_SIZE .. " studs")
-print("   • Perlin scale: " .. CONFIG.PERLIN_SCALE)
-print("   • Base height: " .. CONFIG.BASE_HEIGHT .. " studs")
-print("   • Height variation: " .. CONFIG.HEIGHT_VARIATION .. " studs")
-print("   • Structure chance: " .. (CONFIG.STRUCTURE_CHANCE * 100) .. "%")
-print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	-- ========================
+	-- РАСШИРЕННАЯ СТАТИСТИКА V2.1
+	-- ========================
 
--- Очищаем старую карту и генерируем новую
-clearOldMap()
-task.spawn(generateMap)
+	print("==========================================")
+	print("ГЕНЕРАЦИЯ ЗАВЕРШЕНА! (32x32 БЛОКИ + PORTAL)")
+	print("Время: " .. totalTime .. " секунд")
+	print("Всего блоков: " .. blocksGenerated)
+	print("Размер блока: " .. CONFIG.BLOCK_SIZE .. "x" .. CONFIG.BLOCK_SIZE .. " studs")
+	print("Скорость: " .. math.floor(blocksGenerated / (totalTime + 1)) .. " блоков/сек")
+	print("==========================================")
 
--- ========================
--- ЭКСПОРТ
--- ========================
-return {
-	GenerateMap = generateMap,
-	ClearMap = clearOldMap,
-	GetMapState = function() return MapState end,
-	GetBlockHeight = getBlockHeight,
-	GetBlockAt = function(x, z)
-		if MapState.mapBlocks[x] and MapState.mapBlocks[x][z] then
-			return MapState.mapBlocks[x][z].block
+	-- Статистика высот
+	local minHeight = CONFIG.MAX_HEIGHT
+	local maxHeight = 1
+
+	for i = 1, CONFIG.MAX_HEIGHT do
+		if heightStats[i] > 0 then
+			minHeight = math.min(minHeight, i)
+			maxHeight = math.max(maxHeight, i)
+			local percent = math.floor(heightStats[i] / blocksGenerated * 100)
+			if percent > 0 then
+				print(string.format("ground_%02d: %5d блоков (%d%%)", i, heightStats[i], percent))
+			end
 		end
-		return nil
-	end,
-}
+	end
+
+	print("Диапазон высот: " .. minHeight .. "-" .. maxHeight)
+
+	-- ОБНОВЛЕННАЯ СТАТИСТИКА СТРУКТУР V2.1
+	print("==========================================")
+	print("СТАТИСТИКА СТРУКТУР V2.1 (с Portal):")
+	print("Всего размещено структур: " .. #placedStructures)
+
+	if #AllStructures > 0 then
+		print("\nНастройки загруженных структур:")
+		for _, structure in ipairs(AllStructures) do
+			print(string.format("  %s: шанс=%d%%, высоты=%d-%d, вес=%.1f",
+				structure.name, structure.chance, structure.minHeight, structure.maxHeight, structure.weight))
+		end
+	end
+
+	-- Статистика размещенных структур
+	local structureStats = {}
+	local scaleStats = {min = 999, max = 0, total = 0}
+	local heightDistribution = {}
+	local edgeStoneCount = 0
+	local edgeStoneScaleStats = {min = 999, max = 0, total = 0}
+	local uniqueStructureCount = 0
+
+	for _, structure in ipairs(placedStructures) do
+		if structure.isEdgeStone then
+			edgeStoneCount = edgeStoneCount + 1
+			edgeStoneScaleStats.min = math.min(edgeStoneScaleStats.min, structure.scale)
+			edgeStoneScaleStats.max = math.max(edgeStoneScaleStats.max, structure.scale)
+			edgeStoneScaleStats.total = edgeStoneScaleStats.total + structure.scale
+		elseif structure.isUnique then
+			uniqueStructureCount = uniqueStructureCount + 1
+		else
+			structureStats[structure.name] = (structureStats[structure.name] or 0) + 1
+
+			scaleStats.min = math.min(scaleStats.min, structure.scale)
+			scaleStats.max = math.max(scaleStats.max, structure.scale)
+			scaleStats.total = scaleStats.total + structure.scale
+
+			if not heightDistribution[structure.name] then
+				heightDistribution[structure.name] = {min = 999, max = 0, count = 0}
+			end
+			local dist = heightDistribution[structure.name]
+			dist.min = math.min(dist.min, structure.height)
+			dist.max = math.max(dist.max, structure.height)
+			dist.count = dist.count + 1
+		end
+	end
+
+	-- НОВАЯ СТАТИСТИКА УНИКАЛЬНЫХ СТРУКТУР
+	if uniqueStructureCount > 0 then
+		print(string.format("\nУНИКАЛЬНЫЕ СТРУКТУРЫ: %d", uniqueStructureCount))
+		for _, structure in ipairs(placedStructures) do
+			if structure.isUnique then
+				print(string.format("  ✓ %s размещен в (%d, %d) на высоте %d, масштаб %.1f",
+					structure.name, structure.x, structure.z, structure.height, structure.scale))
+			end
+		end
+		print(string.format("Portal кандидатов было найдено: %d", #portalCandidates))
+	else
+		if portalModel then
+			warn("Portal НЕ был размещен! Возможные причины:")
+			warn("- Не найдено подходящих мест (высота " .. CONFIG.UNIQUE_STRUCTURE_MIN_HEIGHT .. "-" .. CONFIG.UNIQUE_STRUCTURE_MAX_HEIGHT .. ")")
+			warn("- Расстояние от центра должно быть " .. CONFIG.UNIQUE_STRUCTURE_MIN_DISTANCE_FROM_CENTER .. "-" .. CONFIG.UNIQUE_STRUCTURE_MAX_DISTANCE_FROM_CENTER .. " блоков")
+			warn("- Все подходящие места заняты другими структурами")
+			warn("Найдено кандидатов для Portal: " .. #portalCandidates)
+		end
+	end
+
+	-- Краевые камни
+	if edgeStoneCount > 0 then
+		print(string.format("\nКРАЕВЫЕ КАМНИ (граница карты): %d", edgeStoneCount))
+		print(string.format("  Масштаб: min=%.2f, max=%.2f, средний=%.2f",
+			edgeStoneScaleStats.min, edgeStoneScaleStats.max,
+			edgeStoneScaleStats.total / edgeStoneCount))
+	end
+
+	-- Обычные структуры
+	print("\nОбычные структуры по типам:")
+	local totalRegularStructures = 0
+	for structureName, count in pairs(structureStats) do
+		totalRegularStructures = totalRegularStructures + count
+		local percent = (count / blocksGenerated) * 100
+		print(string.format("  %s: %d (%.2f%% от всех блоков)", structureName, count, percent))
+
+		if heightDistribution[structureName] then
+			local dist = heightDistribution[structureName]
+			print(string.format("    └─ На высотах: %d-%d", dist.min, dist.max))
+		end
+	end
+
+	if totalRegularStructures > 0 then
+		print(string.format("\nВСЕГО обычных структур: %d", totalRegularStructures))
+		print(string.format("Процент блоков с обычными структурами: %.2f%%",
+			(totalRegularStructures / blocksGenerated) * 100))
+		print(string.format("Ожидаемый процент (%.0f%% глобальный шанс): %.2f%%",
+			CONFIG.GLOBAL_STRUCTURE_CHANCE * 100, CONFIG.GLOBAL_STRUCTURE_CHANCE * 100))
+		print(string.format("Масштабы: min=%.2f, max=%.2f, средний=%.2f",
+			scaleStats.min, scaleStats.max, scaleStats.total / totalRegularStructures))
+	end
+
+	print("==========================================")
+end
+
+-- ========================
+-- ПРОВЕРКА БЛОКОВ
+-- ========================
+
+local function checkBlocks()
+	local found = 0
+	local missing = {}
+
+	for i = 1, 20 do
+		local blockName = "ground_" .. i
+		local block = groundsFolder:FindFirstChild(blockName)
+		if block then
+			found = found + 1
+		else
+			table.insert(missing, blockName)
+		end
+	end
+
+	print("Найдено блоков: " .. found .. " из 20")
+	if #missing > 0 and #missing <= 5 then
+		warn("Отсутствуют: " .. table.concat(missing, ", "))
+	end
+
+	if found < 20 then
+		CONFIG.MAX_HEIGHT = found
+		CONFIG.START_HEIGHT = math.floor(found / 2)
+		warn("Изменен MAX_HEIGHT на " .. CONFIG.MAX_HEIGHT)
+		warn("Изменен START_HEIGHT на " .. CONFIG.START_HEIGHT)
+	end
+end
+
+-- ========================
+-- ГЛАВНАЯ ФУНКЦИЯ (ОБНОВЛЕНА)
+-- ========================
+
+local function main()
+	warn("==========================================")
+	warn("ЗАПУСК ГЕНЕРАТОРА КАРТЫ V2.1 С БЛОКАМИ 32x32 + PORTAL")
+	warn("==========================================")
+
+	groundsFolder = getGroundsFolder()
+	structuresFolder = getStructuresFolder()
+	portalModel = getPortalModel()  -- НОВОЕ: Ищем Portal
+	mapFolder = createMapFolder()
+
+	checkBlocks()
+
+	math.randomseed(tick())
+	for i = 1, 10 do math.random() end
+
+	initNoise()
+
+	-- Инициализируем базу данных структур
+	initializeStructureDatabase()
+
+	generateLandscapeFeatures()
+	generateMap()
+
+	local spawn = Instance.new("SpawnLocation")
+	spawn.Position = Vector3.new(0, 150, 0)
+	spawn.Size = Vector3.new(15, 1, 15)
+	spawn.Anchored = true
+	spawn.Material = Enum.Material.Neon
+	spawn.BrickColor = BrickColor.new("Lime green")
+	spawn.Parent = workspace
+
+	warn("==========================================")
+	warn("ГЕНЕРАЦИЯ V2.1 ЗАВЕРШЕНА! БЛОКИ 32x32 + PORTAL АКТИВНЫ!")
+	warn("==========================================")
+end
+
+-- ЗАПУСК
+main()
